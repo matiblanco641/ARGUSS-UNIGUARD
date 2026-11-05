@@ -13,10 +13,14 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import database as db
 from .config import settings
+from .arguss_client import (
+    send_visit_to_arguss,
+    ArgussConnectionError,
+)
 from .services import (
     stt_service,
     llm_service,
@@ -43,7 +47,6 @@ db.init()
 totems: set[WebSocket] = set()
 residents: dict[str, set[WebSocket]] = {}
 
-# Historial independiente de cada conversación.
 sessions: dict[str, list] = {}
 session_last_seen: dict[str, float] = {}
 
@@ -79,6 +82,10 @@ async def _broadcast(targets, payload):
         except Exception:
             targets.discard(ws)
 
+
+# --------------------------------------------------
+# CONVERSACIÓN CON SOFÍA
+# --------------------------------------------------
 
 @app.post("/api/converse")
 async def converse(audio: UploadFile, session: str = "totem-1"):
@@ -158,7 +165,61 @@ async def converse(audio: UploadFile, session: str = "totem-1"):
 
 
 # --------------------------------------------------
-# PRUEBA DE COMPARACIÓN FACIAL
+# REGISTRO DE VISITAS EN ARGUSS
+# --------------------------------------------------
+
+class VisitRequest(BaseModel):
+    department: int = Field(ge=1, le=3)
+    visitor_name: str = Field(min_length=2, max_length=120)
+    visitor_reason: str = Field(default="", max_length=500)
+
+
+@app.post("/api/visits")
+async def register_visit(visit: VisitRequest):
+
+    try:
+        result = await send_visit_to_arguss(
+            department=visit.department,
+            visitor_name=visit.visitor_name.strip(),
+            visitor_reason=visit.visitor_reason.strip(),
+        )
+
+        db.log(
+            "VISIT_SENT_TO_ARGUSS",
+            {
+                "department": visit.department,
+                "visitor_name": visit.visitor_name,
+                "visitor_reason": visit.visitor_reason,
+                "result": result,
+            }
+        )
+
+        return {
+            "ok": True,
+            "message": "Visita enviada correctamente a ARGUSS.",
+            "arguss": result,
+        }
+
+    except ArgussConnectionError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
+
+    except Exception as error:
+        print(
+            f"[VISITAS] Error inesperado: {error}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo procesar la visita.",
+        ) from error
+
+
+# --------------------------------------------------
+# COMPARACIÓN FACIAL
 # --------------------------------------------------
 
 @app.post("/api/face/compare")
@@ -213,6 +274,10 @@ async def compare_faces(
         await image_b.close()
 
 
+# --------------------------------------------------
+# AUTENTICACIÓN DE RESIDENTES
+# --------------------------------------------------
+
 class Decision(BaseModel):
     approve: bool
 
@@ -235,6 +300,10 @@ def _auth(token: str):
             detail="Token inválido."
         )
 
+
+# --------------------------------------------------
+# DECISIÓN SOBRE VISITAS
+# --------------------------------------------------
 
 @app.post("/api/visits/{vid}/decision")
 async def decide(
@@ -287,6 +356,10 @@ async def decide(
     }
 
 
+# --------------------------------------------------
+# APERTURA REMOTA
+# --------------------------------------------------
+
 @app.post("/api/door/open")
 async def remote_open(x_token: str = Header("")):
     _auth(x_token)
@@ -297,6 +370,10 @@ async def remote_open(x_token: str = Header("")):
 
     return result
 
+
+# --------------------------------------------------
+# WEBSOCKETS
+# --------------------------------------------------
 
 @app.websocket("/ws/totem")
 async def ws_totem(ws: WebSocket):
@@ -339,6 +416,10 @@ async def ws_resident(
     except WebSocketDisconnect:
         residents[unit].discard(ws)
 
+
+# --------------------------------------------------
+# ESTADO DEL SERVIDOR
+# --------------------------------------------------
 
 @app.get("/api/health")
 def health():
