@@ -19,8 +19,10 @@ from . import database as db
 from .config import settings
 from .arguss_client import (
     send_visit_to_arguss,
+    get_visit_status,
     ArgussConnectionError,
 )
+
 from .services import (
     stt_service,
     llm_service,
@@ -216,7 +218,36 @@ async def register_visit(visit: VisitRequest):
             status_code=500,
             detail="No se pudo procesar la visita.",
         ) from error
+# --------------------------------------------------
+# CONSULTAR ESTADO DE VISITA EN ARGUSS
+# --------------------------------------------------
 
+@app.get("/api/visits/{visit_id}/status")
+async def check_visit_status(visit_id: str):
+    try:
+        result = await get_visit_status(visit_id)
+
+        return {
+            "ok": True,
+            "visit": result.get("visit")
+        }
+
+    except ArgussConnectionError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        ) from error
+
+    except Exception as error:
+        print(
+            f"[VISITAS] Error consultando estado: {error}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo consultar el estado de la visita.",
+        ) from error
 
 # --------------------------------------------------
 # COMPARACIÓN FACIAL
