@@ -68,3 +68,51 @@ async def send_visit_to_arguss(
         raise ArgussConnectionError(
             "No se pudo establecer conexión con ARGUSS."
         ) from error
+
+
+async def get_visit_status(visit_id: str):
+    """
+    Consulta el estado de una visita en ARGUSS.
+    Requiere que exista la ruta GET correspondiente
+    en el servidor ARGUSS.
+    """
+
+    if not settings.arguss_api_url:
+        raise ArgussConnectionError(
+            "Falta configurar ARGUSS_API_URL."
+        )
+
+    if not settings.arguss_service_token:
+        raise ArgussConnectionError(
+            "Falta configurar ARGUSS_SERVICE_TOKEN."
+        )
+
+    base_url = settings.arguss_api_url.rstrip("/")
+    url = f"{base_url}/api/totem/visits/{visit_id}"
+
+    headers = {
+        "X-TOTEM-KEY": settings.arguss_service_token,
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=settings.arguss_timeout
+        ) as client:
+            response = await client.get(
+                url,
+                headers=headers,
+            )
+
+            response.raise_for_status()
+            return response.json()
+
+    except httpx.HTTPStatusError as error:
+        raise ArgussConnectionError(
+            f"ARGUSS respondió con HTTP "
+            f"{error.response.status_code}."
+        ) from error
+
+    except httpx.RequestError as error:
+        raise ArgussConnectionError(
+            "No se pudo consultar ARGUSS."
+        ) from error
