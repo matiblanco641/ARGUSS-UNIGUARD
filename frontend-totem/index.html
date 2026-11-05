@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8">
+    <title>UniGuard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="./uniguard-theme.css">
+
+    <style>
+        :root {
+            --bg: #0b0b0c;
+            --panel: rgba(22, 21, 19, 0.88);
+            --blue: #cfa65e;
+            --green: #55c98a;
+            --red: #e46d6d;
+            --tx: #f3efe7;
+            --mut: #a9a39a;
+            --gold: #cfa65e;
+            --bronze: #b8893a;
+            --amber: #e0b25a;
+            --border: rgba(207, 166, 94, 0.35);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+        }
+
+        html,
+        body {
+            height: 100%;
+            background:
+                radial-gradient(ellipse at 15% 0%, rgba(207, 166, 94, 0.07), transparent 42%),
+                linear-gradient(145deg, #0b0b0c, #11100e 55%, #090909);
+            color: var(--tx);
+            font-family: "Montserrat", Arial, sans-serif;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1.1fr 1fr;
+            height: 100%;
+        }
+
+        #stage {
+            position: relative;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            min-width: 0;
+            background: radial-gradient(circle at 50% 35%, #211b12, var(--bg) 70%);
+        }
+
+        canvas#avatar {
+            height: 96%;
+            width: auto;
+            max-width: 100%;
+        }
+
+        aside {
+            min-width: 0;
+            background: rgba(18, 16, 13, 0.88);
+            border-left: 1px solid var(--border);
+            padding: 56px 56px 48px;
+            display: flex;
+            flex-direction: column;
+            gap: 28px;
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+        }
+
+        #status {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            font-size: 26px;
+            color: var(--mut);
+        }
+
+        #dot {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--blue);
+            flex-shrink: 0;
+            transition: background .3s;
+        }
+
+        #dot.listening {
+            background: var(--green);
+            animation: p 1s infinite;
+        }
+
+        #dot.thinking {
+            background: var(--amber);
+            animation: p .6s infinite;
+        }
+
+        #dot.denied {
+            background: var(--red);
+        }
+
+        #dot.granted {
+            background: var(--green);
+        }
+
+        @keyframes p {
+            50% {
+                opacity: .35;
+            }
+        }
+
+        #log {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-end;
+            gap: 18px;
+            font-size: 34px;
+            line-height: 1.35;
+            overflow: hidden;
+        }
+
+        .v {
+            align-self: flex-end;
+            color: var(--mut);
+            font-size: 28px;
+            max-width: 85%;
+        }
+
+        .s {
+            max-width: 92%;
+        }
+
+        /* MICRÓFONO */
+
+        #talk {
+            position: relative;
+            width: 210px;
+            height: 210px;
+            min-width: 210px;
+            min-height: 210px;
+            align-self: center;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: none;
+            border-radius: 50%;
+            background: transparent;
+            color: var(--gold);
+            cursor: pointer;
+            touch-action: none;
+            -webkit-tap-highlight-color: transparent;
+            isolation: isolate;
+            transition: color .25s ease, transform .25s ease;
+        }
+
+        #talk::before {
+            content: "";
+            position: absolute;
+            inset: 4px;
+            border: 4px dotted var(--gold);
+            border-radius: 50%;
+            opacity: .95;
+            transition: border-color .25s ease, opacity .25s ease, transform .3s ease;
+        }
+
+        #talk::after {
+            content: "";
+            position: absolute;
+            inset: 23px;
+            border: 2px dotted rgba(207, 166, 94, .55);
+            border-radius: 50%;
+            transition: border-color .25s ease, transform .3s ease;
+        }
+
+        #talk .mic-icon {
+            position: relative;
+            z-index: 2;
+            width: 66px;
+            height: 66px;
+            stroke: currentColor;
+            fill: none;
+            stroke-width: 2.1;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            filter: drop-shadow(0 0 8px rgba(207, 166, 94, .18));
+            transition: transform .25s ease, filter .25s ease;
+        }
+
+        #talk:hover {
+            color: var(--amber);
+            transform: scale(1.025);
+        }
+
+        #talk:hover::before {
+            transform: scale(1.035);
+            opacity: 1;
+        }
+
+        #talk:hover::after {
+            border-color: rgba(224, 178, 90, .8);
+        }
+
+        #talk.on {
+            color: var(--green);
+        }
+
+        #talk.on::before {
+            border-color: var(--green);
+            animation: mic-pulse 1.5s ease-in-out infinite;
+        }
+
+        #talk.on::after {
+            border-color: rgba(85, 201, 138, .65);
+            animation: mic-inner-pulse 1.5s ease-in-out infinite;
+        }
+
+        #talk.on .mic-icon {
+            filter: drop-shadow(0 0 12px rgba(85, 201, 138, .35));
+            transform: scale(1.06);
+        }
+
+        @keyframes mic-pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+                opacity: .8;
+            }
+
+            50% {
+                transform: scale(1.045);
+                opacity: 1;
+            }
+        }
+
+        @keyframes mic-inner-pulse {
+
+            0%,
+            100% {
+                transform: scale(1);
+            }
+
+            50% {
+                transform: scale(.97);
+            }
+        }
+
+        #talk:disabled {
+            color: #71634b;
+            cursor: not-allowed;
+            opacity: .55;
+        }
+
+        #talk:disabled::before {
+            border-color: #71634b;
+        }
+
+        #talk:disabled::after {
+            border-color: rgba(113, 99, 75, .4);
+        }
+
+        #talk:focus-visible {
+            outline: 2px solid var(--amber);
+            outline-offset: 9px;
+        }
+
+        /* PANEL DE CÁMARA */
+
+        #face-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            width: 260px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: rgba(18, 16, 13, 0.94);
+            box-shadow: 0 8px 28px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 5;
+        }
+
+        #face-title {
+            font-size: 15px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            color: var(--gold);
+        }
+
+        #camera-select {
+            width: 100%;
+            margin-bottom: 10px;
+            padding: 9px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            background: #171512;
+            color: var(--tx);
+            font-size: 12px;
+            outline: none;
+        }
+
+        #camera-select:focus {
+            border-color: var(--gold);
+        }
+
+        #face-video {
+            display: block;
+            width: 100%;
+            aspect-ratio: 4 / 3;
+            object-fit: cover;
+            transform: scaleX(-1);
+            border-radius: 4px;
+            background: #080807;
+        }
+
+        #face-status {
+            margin-top: 10px;
+            font-size: 13px;
+            line-height: 1.4;
+            color: var(--mut);
+        }
+
+        #face-status.detected {
+            color: var(--green);
+        }
+
+        #face-status.error {
+            color: var(--red);
+        }
+
+        #face-status.active {
+            color: var(--gold);
+        }
+
+        @media (max-width: 900px) {
+            main {
+                grid-template-columns: 1fr;
+                grid-template-rows: 45vh 1fr;
+            }
+
+            #stage {
+                min-height: 0;
+            }
+
+            canvas#avatar {
+                height: 100%;
+                max-height: 45vh;
+            }
+
+            aside {
+                padding: 24px;
+                gap: 16px;
+                min-height: 0;
+            }
+
+            #face-panel {
+                top: 10px;
+                left: 10px;
+                width: 190px;
+            }
+
+            #status {
+                font-size: 20px;
+            }
+
+            #log {
+                font-size: 24px;
+            }
+
+            .v {
+                font-size: 20px;
+            }
+
+            #talk {
+                width: 170px;
+                height: 170px;
+                min-width: 170px;
+                min-height: 170px;
+            }
+
+            #talk::after {
+                inset: 19px;
+            }
+
+            #talk .mic-icon {
+                width: 56px;
+                height: 56px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <main>
+        <section id="stage">
+            <canvas id="avatar" width="521" height="587"></canvas>
+
+            <div id="face-panel">
+                <div id="face-title">UniGuard · Cámara</div>
+
+                <select id="camera-select" aria-label="Seleccionar cámara">
+                    <option value="">Buscando cámaras...</option>
+                </select>
+
+                <video id="face-video" autoplay muted playsinline></video>
+
+                <div id="face-status">Iniciando cámara...</div>
+            </div>
+        </section>
+
+        <aside>
+            <div id="status">
+                <span id="dot"></span>
+                <span id="stxt">Lista para ayudarte</span>
+            </div>
+
+            <div id="log"></div>
+
+            <button id="talk" type="button" aria-label="Mantené presionado para hablar"
+                title="Mantené presionado para hablar">
+
+                <svg class="mic-icon" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                    <rect x="24" y="7" width="16" height="34" rx="8"></rect>
+                    <path d="M16 29v3a16 16 0 0 0 32 0v-3"></path>
+                    <path d="M32 48v9"></path>
+                    <path d="M23 57h18"></path>
+                </svg>
+            </button>
+        </aside>
+    </main>
+
+    <script src="js/avatar_engine.js"></script>
+    <script src="js/voice_controller.js"></script>
+    <script src="js/totem_app.js"></script>
+    <script src="js/face_comparison.js"></script>
+
+    <script type="module">
+        import {
+            FaceDetector,
+            FilesetResolver
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+        const video = document.getElementById("face-video");
+        const status = document.getElementById("face-status");
+        const cameraSelect = document.getElementById("camera-select");
+
+        const motionCanvas = document.createElement("canvas");
+        motionCanvas.width = 160;
+        motionCanvas.height = 120;
+
+        const motionContext = motionCanvas.getContext(
+            "2d",
+            { willReadFrequently: true }
+        );
+
+        let detector = null;
+        let stream = null;
+        let running = false;
+        let loading = false;
+        let switchingCamera = false;
+        let previousFrame = null;
+
+        let lastFrameTime = 0;
+        let lastFaceDetection = 0;
+        let lastMotionTime = 0;
+        let lastFaceTime = 0;
+
+        let selectedCameraId = "";
+        let cameraChangeHandler = null;
+
+        const FRAME_INTERVAL = 200;
+        const FACE_INTERVAL = 300;
+        const MOTION_THRESHOLD = 18;
+        const MOTION_RATIO = 0.035;
+        const MOTION_HOLD_TIME = 1800;
+        const FACE_HOLD_TIME = 2500;
+
+        function showStatus(message, type = "") {
+            status.textContent = message;
+            status.className = type;
+        }
+
+        function stopCamera() {
+            running = false;
+            previousFrame = null;
+
+            if (stream) {
+                stream.getTracks().forEach(track => track.stop());
+                stream = null;
+            }
+
+            video.srcObject = null;
+        }
+
+        async function loadCameraList() {
+            if (!navigator.mediaDevices?.enumerateDevices) {
+                cameraSelect.innerHTML =
+                    '<option value="">No se pueden listar las cámaras</option>';
+                return;
+            }
+
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const cameras = devices.filter(device => device.kind === "videoinput");
+
+                const previousSelection = selectedCameraId;
+                cameraSelect.innerHTML = "";
+
+                if (cameras.length === 0) {
+                    cameraSelect.add(new Option("No se encontraron cámaras", ""));
+                    return;
+                }
+
+                cameras.forEach((camera, index) => {
+                    const label = camera.label || `Cámara ${index + 1}`;
+                    cameraSelect.add(new Option(label, camera.deviceId));
+                });
+
+                const selectionExists = cameras.some(
+                    camera => camera.deviceId === previousSelection
+                );
+
+                if (selectionExists) {
+                    cameraSelect.value = previousSelection;
+                } else {
+                    cameraSelect.selectedIndex = 0;
+                }
+
+            } catch (error) {
+                console.error("Error al listar cámaras:", error);
+                showStatus("No se pudo obtener la lista de cámaras", "error");
+            }
+        }
+
+        async function initializeDetector() {
+            if (detector) return;
+
+            showStatus("Cargando detector facial...");
+
+            const vision = await FilesetResolver.forVisionTasks(
+                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+            );
+
+            detector = await FaceDetector.createFromOptions(vision, {
+                baseOptions: {
+                    modelAssetPath:
+                        "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite"
+                },
+                runningMode: "VIDEO",
+                minDetectionConfidence: 0.6
+            });
+        }
+
+        async function initializeCamera(deviceId = "") {
+            if (loading || switchingCamera) return;
+
+            loading = true;
+            showStatus("Iniciando cámara...");
+
+            try {
+                stopCamera();
+
+                if (!navigator.mediaDevices?.getUserMedia) {
+                    throw new Error(
+                        "La cámara no está disponible. Usá localhost o HTTPS."
+                    );
+                }
+
+                const videoConstraints = deviceId
+                    ? {
+                        deviceId: { exact: deviceId },
+                        width: { ideal: 320 },
+                        height: { ideal: 240 }
+                    }
+                    : {
+                        width: { ideal: 320 },
+                        height: { ideal: 240 }
+                    };
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: videoConstraints
+                });
+
+                video.srcObject = stream;
+                await video.play();
+
+                const activeTrack = stream.getVideoTracks()[0];
+                const activeSettings = activeTrack.getSettings();
+
+                selectedCameraId = activeSettings.deviceId || deviceId || "";
+
+                await loadCameraList();
+
+                if (selectedCameraId) {
+                    cameraSelect.value = selectedCameraId;
+                }
+
+                await initializeDetector();
+
+                running = true;
+                previousFrame = null;
+                lastMotionTime = 0;
+                lastFaceTime = 0;
+                lastFrameTime = 0;
+                lastFaceDetection = 0;
+
+                showStatus("Sistema activo · Esperando movimiento", "active");
+
+                detectLoop();
+
+                activeTrack.addEventListener("ended", () => {
+                    if (running) {
+                        stopCamera();
+                        showStatus("La cámara se desconectó", "error");
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error al iniciar UniGuard:", error);
+
+                showStatus(
+                    "No se pudo iniciar la cámara. Revisá los permisos y la conexión.",
+                    "error"
+                );
+
+                stopCamera();
+
+            } finally {
+                loading = false;
+            }
+        }
+
+        async function changeCamera(deviceId) {
+            if (!deviceId || deviceId === selectedCameraId) return;
+            if (switchingCamera || loading) return;
+
+            switchingCamera = true;
+            running = false;
+
+            try {
+                stopCamera();
+                selectedCameraId = deviceId;
+                showStatus("Cambiando de cámara...");
+
+                const videoConstraints = {
+                    deviceId: { exact: deviceId },
+                    width: { ideal: 320 },
+                    height: { ideal: 240 }
+                };
+
+                stream = await navigator.mediaDevices.getUserMedia({
+                    audio: false,
+                    video: videoConstraints
+                });
+
+                video.srcObject = stream;
+                await video.play();
+
+                const activeTrack = stream.getVideoTracks()[0];
+                selectedCameraId = activeTrack.getSettings().deviceId || deviceId;
+
+                await loadCameraList();
+                cameraSelect.value = selectedCameraId;
+
+                running = true;
+                previousFrame = null;
+                lastMotionTime = 0;
+                lastFaceTime = 0;
+                lastFrameTime = 0;
+                lastFaceDetection = 0;
+
+                showStatus("Cámara cambiada · Esperando movimiento", "active");
+                detectLoop();
+
+                activeTrack.addEventListener("ended", () => {
+                    if (running) {
+                        stopCamera();
+                        showStatus("La cámara se desconectó", "error");
+                    }
+                });
+
+            } catch (error) {
+                console.error("Error al cambiar de cámara:", error);
+
+                showStatus(
+                    "No se pudo abrir esa cámara. Intentando recuperar la anterior...",
+                    "error"
+                );
+
+                await initializeCamera();
+
+            } finally {
+                switchingCamera = false;
+            }
+        }
+
+        function detectMotion() {
+            motionContext.drawImage(
+                video,
+                0,
+                0,
+                motionCanvas.width,
+                motionCanvas.height
+            );
+
+            const currentFrame = motionContext.getImageData(
+                0,
+                0,
+                motionCanvas.width,
+                motionCanvas.height
+            ).data;
+
+            if (!previousFrame) {
+                previousFrame = new Uint8ClampedArray(currentFrame);
+                return false;
+            }
+
+            let changedPixels = 0;
+            const totalPixels = currentFrame.length / 4;
+
+            for (let i = 0; i < currentFrame.length; i += 16) {
+                const currentBrightness =
+                    (currentFrame[i] + currentFrame[i + 1] + currentFrame[i + 2]) / 3;
+
+                const previousBrightness =
+                    (previousFrame[i] + previousFrame[i + 1] + previousFrame[i + 2]) / 3;
+
+                if (
+                    Math.abs(currentBrightness - previousBrightness) >
+                    MOTION_THRESHOLD
+                ) {
+                    changedPixels++;
+                }
+            }
+
+            previousFrame.set(currentFrame);
+
+            const sampledPixels = totalPixels / 4;
+            const changedRatio = changedPixels / sampledPixels;
+
+            return changedRatio > MOTION_RATIO;
+        }
+
+        function detectLoop() {
+            if (!running) return;
+
+            requestAnimationFrame(detectLoop);
+
+            if (
+                video.readyState < 2 ||
+                performance.now() - lastFrameTime < FRAME_INTERVAL
+            ) {
+                return;
+            }
+
+            const now = performance.now();
+            lastFrameTime = now;
+
+            try {
+                const movementDetected = detectMotion();
+
+                if (movementDetected) {
+                    lastMotionTime = now;
+                }
+
+                const motionActive =
+                    now - lastMotionTime < MOTION_HOLD_TIME;
+
+                if (motionActive && now - lastFaceDetection >= FACE_INTERVAL) {
+                    lastFaceDetection = now;
+
+                    const result = detector.detectForVideo(video, now);
+                    const faces = result.detections || [];
+
+                    if (faces.length > 0) {
+                        lastFaceTime = now;
+
+                        showStatus(
+                            faces.length === 1
+                                ? "Rostro detectado"
+                                : `${faces.length} rostros detectados`,
+                            "detected"
+                        );
+
+                        return;
+                    }
+                }
+
+                if (now - lastFaceTime < FACE_HOLD_TIME) {
+                    showStatus("Rostro detectado", "detected");
+                } else if (motionActive) {
+                    showStatus("Movimiento detectado · Analizando rostro", "active");
+                } else {
+                    showStatus("Sistema activo · Esperando movimiento", "active");
+                }
+
+            } catch (error) {
+                console.error("Error durante la detección:", error);
+                showStatus("Error analizando la imagen", "error");
+            }
+        }
+
+        cameraSelect.addEventListener("change", event => {
+            changeCamera(event.target.value);
+        });
+
+        if (navigator.mediaDevices?.addEventListener) {
+            navigator.mediaDevices.addEventListener("devicechange", async () => {
+                await loadCameraList();
+            });
+        }
+
+        async function startUniGuard() {
+            try {
+                // Primero se solicita permiso para poder obtener los nombres
+                // de las cámaras disponibles.
+                await initializeCamera();
+
+                await loadCameraList();
+
+            } catch (error) {
+                console.error(error);
+                showStatus("No se pudo iniciar el sistema de cámara", "error");
+            }
+        }
+
+        startUniGuard();
+
+        window.addEventListener("beforeunload", () => {
+            stopCamera();
+        });
+    </script>
+</body>
+
+</html>

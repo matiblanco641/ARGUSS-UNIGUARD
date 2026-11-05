@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap');
+
+:root {
+    color-scheme: dark;
+    --ug-bg: #0b0b0c;
+    --ug-panel: rgba(22, 21, 19, 0.88);
+    --ug-gold: #cfa65e;
+    --ug-bronze: #b8893a;
+    --ug-amber: #e0b25a;
+    --ug-border: rgba(207, 166, 94, 0.35);
+    --ug-text: #f3efe7;
+    --ug-muted: #a9a39a;
+    --ug-success: #55c98a;
+    --ug-error: #e46d6d;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html {
+    background: var(--ug-bg);
+}
+
+body {
+    font-family: "Montserrat", Arial, sans-serif;
+    color: var(--ug-text);
+}
+
+button,
+input,
+textarea,
+select {
+    font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+    outline: 2px solid var(--ug-gold);
+    outline-offset: 3px;
+}
+
+input,
+textarea,
+select {
+    color: var(--ug-text);
+    background: rgba(8, 8, 8, 0.8);
+    border: 1px solid var(--ug-border);
+}
+
+a {
+    color: var(--ug-gold);
+}
+
+::selection {
+    color: #17120a;
+    background: var(--ug-gold);
+}
+
+* {
+    scrollbar-width: thin;
+    scrollbar-color: var(--ug-bronze) #11100e;
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: #11100e;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #755a30;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--ug-gold);
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    *,
+    *::before,
+    *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+    }
+}
