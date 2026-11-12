@@ -18,13 +18,18 @@ class Settings:
         os.getenv("UNLOCK_SECONDS", "5")
     )
 
-    # Inteligencia artificial
+    # Inteligencia artificial en la nube
     ollama_url = os.getenv(
-        "OLLAMA_URL", "http://127.0.0.1:11434"
+        "OLLAMA_URL", "https://ollama.com"
+    )
+    ollama_api_key = os.getenv(
+        "OLLAMA_API_KEY", ""
     )
     llm_model = os.getenv(
-        "LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"
+        "OLLAMA_MODEL", "deepseek-v4.1-flash"
     )
+
+    # Reconocimiento de voz
     whisper_model = os.getenv(
         "WHISPER_MODEL", "base"
     )
