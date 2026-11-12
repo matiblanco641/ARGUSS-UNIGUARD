@@ -99,8 +99,12 @@ def chat(history: list, user_text: str):
         inicio_ia = time.perf_counter()
 
         response = httpx.post(
-            f"{settings.ollama_url}/api/chat",
-            timeout=120,
+    "https://ollama.com/api/chat",
+    headers={
+        "Authorization": f"Bearer {settings.ollama_api_key}",
+        "Content-Type": "application/json"
+    },
+    timeout=120,
             json={
                 "model": settings.llm_model,
                 "keep_alive": "10m",
