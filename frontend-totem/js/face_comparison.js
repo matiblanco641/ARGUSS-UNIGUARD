@@ -1,3 +1,4 @@
+
 (() => {
     const video = document.getElementById("face-video");
     const panel = document.getElementById("face-panel");
@@ -7,16 +8,11 @@
         return;
     }
 
-    // Se puede definir window.UNIGUARD_API_URL antes de cargar este archivo
-    // (por ejemplo, la URL del backend en Render). Por defecto, igual que antes.
-    const API = window.UNIGUARD_API_URL || "http://127.0.0.1:8001";
+    const API = `http://${location.hostname || "127.0.0.1"}:8001`;
 
-    // Evita duplicar el sistema si el archivo se carga nuevamente.
     if (window.UniGuardFaceComparison) return;
-
     window.UniGuardFaceComparison = true;
 
-    // Elimina los controles de la demostración anterior.
     document.getElementById("face-reference-input")?.remove();
     document.getElementById("face-compare-result")?.remove();
 
@@ -24,8 +20,7 @@
         element.remove();
     });
 
-    const oldStatus = document.getElementById("face-auto-status");
-    oldStatus?.remove();
+    document.getElementById("face-auto-status")?.remove();
 
     const style = document.createElement("style");
 
@@ -38,6 +33,22 @@
             color: var(--tx);
             font-size: 13px;
             line-height: 1.5;
+            transition: color .2s ease, border-color .2s ease;
+        }
+
+        #face-auto-status.face-warning {
+            color: #e0b25a;
+            border-color: #e0b25a;
+        }
+
+        #face-auto-status.face-success {
+            color: #55c98a;
+            border-color: #55c98a;
+        }
+
+        #face-auto-status.face-error {
+            color: #e46d6d;
+            border-color: #e46d6d;
         }
 
         #face-password-form {
@@ -64,6 +75,11 @@
             background: #252019;
             color: white;
             cursor: pointer;
+        }
+
+        #face-password-form button:disabled {
+            opacity: .6;
+            cursor: wait;
         }
     `;
 
@@ -94,8 +110,9 @@
     let challengeId = null;
     let lastAttempt = 0;
 
-    function setStatus(message) {
+    function setStatus(message, type = "") {
         status.textContent = message;
+        status.className = type;
     }
 
     function wait(ms) {
@@ -126,8 +143,11 @@
 
             canvas.toBlob(
                 blob => {
-                    if (blob) resolve(blob);
-                    else reject(new Error("No se pudo capturar la imagen."));
+                    if (blob) {
+                        resolve(blob);
+                    } else {
+                        reject(new Error("No se pudo capturar la imagen."));
+                    }
                 },
                 "image/jpeg",
                 0.85
@@ -167,7 +187,10 @@
             const result = await response.json();
 
             if (response.status === 422) {
-                setStatus("No se pudo detectar un rostro. Mirá hacia la cámara.");
+                setStatus(
+                    "No se reconoció ningún rostro. Mirá hacia la cámara.",
+                    "face-warning"
+                );
                 return;
             }
 
@@ -179,8 +202,9 @@
 
             if (!result.matched) {
                 setStatus(
-                    "No encontramos una coincidencia. " +
-                    "Podés intentar nuevamente o solicitar asistencia."
+                    "No se reconoció ningún rostro registrado. " +
+                    "Podés volver a intentarlo o solicitar asistencia.",
+                    "face-warning"
                 );
                 return;
             }
@@ -189,7 +213,8 @@
 
             setStatus(
                 `Hola, ${result.name}. Unidad ${result.unit}. ` +
-                "Ingresá tu contraseña para verificar tu identidad."
+                "Ingresá tu contraseña para verificar tu identidad.",
+                "face-success"
             );
 
             form.style.display = "block";
@@ -197,7 +222,12 @@
 
         } catch (error) {
             console.error("UniGuard - reconocimiento facial:", error);
-            setStatus(`No se pudo realizar el reconocimiento: ${error.message}`);
+
+            setStatus(
+                `No se pudo realizar el reconocimiento: ${error.message}`,
+                "face-error"
+            );
+
         } finally {
             scanning = false;
         }
@@ -242,11 +272,12 @@
             setStatus(
                 `Identidad verificada: ${result.resident.name}, ` +
                 `unidad ${result.resident.unit}. ` +
-                "La puerta no se ha abierto."
+                "La puerta no se ha abierto.",
+                "face-success"
             );
 
         } catch (error) {
-            setStatus(error.message);
+            setStatus(error.message, "face-error");
 
             if (responseIsExpired(error.message)) {
                 challengeId = null;
