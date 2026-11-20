@@ -1,6 +1,10 @@
-const API = location.hostname
-  ? `http://${location.hostname}:8001`
-  : "http://localhost:8001";
+const API =
+  location.hostname === "localhost" ||
+  location.hostname === "127.0.0.1"
+    ? "http://127.0.0.1:8001"
+    : "https://arguss-uniguard.onrender.com";
+
+const WS = API.replace(/^http/, "ws");
 
 const $ = id => document.getElementById(id);
 
