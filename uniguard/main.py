@@ -1,62 +1,88 @@
 
-import os
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+
+from . import database as db
+from .arguss_client import (
+    send_visit_to_arguss,
+    ArgussConnectionError,
+)
 
 
-class Settings:
-    # Controlador de acceso
-    access_controller_mode = os.getenv(
-        "ACCESS_CONTROLLER_MODE", "SIMULATED"
-    )
-    controller_host = os.getenv(
-        "CONTROLLER_HOST", "192.168.1.50"
-    )
-    controller_port = int(
-        os.getenv("CONTROLLER_PORT", "502")
-    )
-    relay_coil = int(os.getenv("RELAY_COIL", "0"))
-    unlock_seconds = float(
-        os.getenv("UNLOCK_SECONDS", "5")
-    )
-
-    # Inteligencia artificial
-    ollama_url = os.getenv(
-        "OLLAMA_URL", "http://127.0.0.1:11434"
-    )
-    llm_model = os.getenv(
-        "LLM_MODEL", "qwen2.5:3b-instruct-q4_K_M"
-    )
-    whisper_model = os.getenv(
-        "WHISPER_MODEL", "base"
-    )
-
-    # Voz de Sofía
-    piper_model = os.getenv(
-        "PIPER_MODEL",
-        "models/es_AR-daniela-high.onnx"
-    )
-
-    # Base de datos local de UniGuard
-    db_path = os.getenv(
-        "DB_PATH", "uniguard.db"
-    )
-
-    # Comunicación con ARGUSS
-    arguss_api_url = os.getenv(
-        "ARGUSS_API_URL", ""
-    ).rstrip("/")
-
-    arguss_service_token = os.getenv(
-        "ARGUSS_SERVICE_TOKEN", ""
-    )
-
-    arguss_timeout = float(
-        os.getenv("ARGUSS_TIMEOUT", "10")
-    )
-
-    # Autenticación de residentes
-    resident_token = os.getenv(
-        "RESIDENT_TOKEN", ""
-    )
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.init()
+    yield
 
 
-settings = Settings()
+app = FastAPI(
+    title="UniGuard API",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class VisitRequest(BaseModel):
+    department: int = Field(ge=1, le=3)
+    visitor_name: str = Field(min_length=1, max_length=120)
+    visitor_reason: str = Field(default="", max_length=500)
+
+
+@app.get("/")
+async def root():
+    return {
+        "ok": True,
+        "service": "UniGuard",
+        "status": "running",
+    }
+
+
+@app.get("/api/health")
+async def health():
+    return {
+        "ok": True,
+        "service": "UniGuard",
+        "mode": "SIMULATED",
+        "arguss_configured": True,
+    }
+
+
+@app.post("/api/visits")
+async def create_visit(data: VisitRequest):
+    try:
+        result = await send_visit_to_arguss(
+            department=data.department,
+            visitor_name=data.visitor_name.strip(),
+            visitor_reason=data.visitor_reason.strip(),
+        )
+
+        db.log(
+            "VISIT_SENT_TO_ARGUSS",
+            {
+                "department": data.department,
+                "visitor_name": data.visitor_name,
+                "response": result,
+            },
+        )
+
+        return {
+            "ok": True,
+            "visit": result,
+        }
+
+    except (ArgussConnectionError, ValueError) as error:
+        raise HTTPException(
+            status_code=502,
+            detail=str(error),
+        )
