@@ -1,5 +1,3 @@
-/* UniGuard avatar: animación facial sutil para receptionist.jpg (521x587).
-   Mantiene la voz y el resto del proyecto sin cambios. */
 
 const CFG = {
   image: "assets/receptionist.jpg",
@@ -22,8 +20,13 @@ const STATES = {
 
 class Avatar {
   constructor(canvas) {
+    if (!canvas) throw new Error("No se encontró el canvas del avatar.");
+
     this.c = canvas;
     this.x = canvas.getContext("2d");
+
+    if (!this.x) throw new Error("No se pudo iniciar el canvas.");
+
     this.state = "IDLE";
     this.cur = { ...STATES.IDLE };
     this.mouth = { open: 0, wide: 0.5 };
@@ -52,22 +55,15 @@ class Avatar {
   }
 
   setState(state) {
-    if (STATES[state]) {
-      this.state = state;
-    }
+    if (STATES[state]) this.state = state;
   }
 
   setLevel(level) {
     if (!level) return;
 
     this.level = {
-      amp: Number.isFinite(level.amp)
-        ? Math.max(0, level.amp)
-        : 0,
-
-      centroid: Number.isFinite(level.centroid)
-        ? level.centroid
-        : 0.5
+      amp: Number.isFinite(level.amp) ? Math.max(0, level.amp) : 0,
+      centroid: Number.isFinite(level.centroid) ? level.centroid : 0.5
     };
   }
 
@@ -75,13 +71,10 @@ class Avatar {
     const target = STATES[this.state] || STATES.IDLE;
     const elapsed = (t - this.t0) / 1000;
 
-    // Transiciones suaves entre expresiones.
     for (const key of ["smile", "gaze"]) {
-      this.cur[key] +=
-        (target[key] - this.cur[key]) * 0.08;
+      this.cur[key] += (target[key] - this.cur[key]) * 0.08;
     }
 
-    // Parpadeos ocasionales.
     if (t > this.nextBlink && !this.blinking) {
       this.blinking = t;
     }
@@ -89,42 +82,29 @@ class Avatar {
     if (this.blinking) {
       const p = (t - this.blinking) / 145;
 
-      this.blink = p < 1
-        ? Math.sin(p * Math.PI)
-        : 0;
+      this.blink = p < 1 ? Math.sin(p * Math.PI) : 0;
 
       if (p >= 1) {
         this.blinking = 0;
-        this.nextBlink =
-          t + 2300 + Math.random() * 3000;
+        this.nextBlink = t + 2300 + Math.random() * 3000;
       }
     }
 
-    // Apertura progresiva de la boca al hablar.
     const speaking = this.state === "SPEAKING";
     const amp = Math.min(1, this.level.amp || 0);
 
-    const targetOpen = speaking
-      ? Math.min(0.48, amp * 1.05)
-      : 0;
+    const targetOpen = speaking ? Math.min(0.48, amp * 1.05) : 0;
 
     this.mouth.open +=
-      (targetOpen - this.mouth.open) *
-      (speaking ? 0.22 : 0.16);
+      (targetOpen - this.mouth.open) * (speaking ? 0.22 : 0.16);
 
-    // Ajuste sutil del ancho de la boca según la voz.
     const targetWide = speaking
-      ? Math.max(
-        0.42,
-        Math.min(0.62, this.level.centroid || 0.5)
-      )
+      ? Math.max(0.42, Math.min(0.62, this.level.centroid || 0.5))
       : 0.5;
 
-    this.mouth.wide +=
-      (targetWide - this.mouth.wide) * 0.10;
+    this.mouth.wide += (targetWide - this.mouth.wide) * 0.10;
 
     this.draw(elapsed);
-
     requestAnimationFrame(next => this.frame(next));
   }
 
@@ -135,58 +115,43 @@ class Avatar {
 
     ctx.clearRect(0, 0, w, h);
 
-    if (this.ok) {
-      // Movimiento muy leve del avatar completo.
-      // Se amplía un poco la foto para evitar bordes vacíos.
-      const angle = Math.sin(elapsed * 0.72) * 0.0028;
-      const dx = Math.sin(elapsed * 0.55) * 0.7;
-      const dy = Math.sin(elapsed * 1.05) * 0.45;
-
-      ctx.save();
-      ctx.translate(w / 2 + dx, h / 2 + dy);
-      ctx.rotate(angle);
-      ctx.scale(1.012, 1.012);
-
-      ctx.drawImage(
-        this.img,
-        -w / 2,
-        -h / 2,
-        w,
-        h
-      );
-
-      ctx.restore();
-
-      // Parpadeo discreto sobre los ojos.
-      if (this.blink > 0.02) {
-        for (const eye of CFG.eyes) {
-          ctx.save();
-          ctx.fillStyle = CFG.skin;
-
-          ctx.beginPath();
-          ctx.ellipse(
-            eye.x,
-            eye.y - CFG.eyeH * 0.45,
-            CFG.eyeW / 2,
-            Math.max(
-              0.7,
-              this.blink * CFG.eyeH * 0.75
-            ),
-            0,
-            0,
-            Math.PI * 2
-          );
-
-          ctx.fill();
-          ctx.restore();
-        }
-      }
-
-      this.drawMouth(ctx);
-    } else {
+    if (!this.ok) {
       ctx.fillStyle = "#12161f";
       ctx.fillRect(0, 0, w, h);
+      return;
     }
+
+    const angle = Math.sin(elapsed * 0.72) * 0.0028;
+    const dx = Math.sin(elapsed * 0.55) * 0.7;
+    const dy = Math.sin(elapsed * 1.05) * 0.45;
+
+    ctx.save();
+    ctx.translate(w / 2 + dx, h / 2 + dy);
+    ctx.rotate(angle);
+    ctx.scale(1.012, 1.012);
+    ctx.drawImage(this.img, -w / 2, -h / 2, w, h);
+    ctx.restore();
+
+    if (this.blink > 0.02) {
+      for (const eye of CFG.eyes) {
+        ctx.save();
+        ctx.fillStyle = CFG.skin;
+        ctx.beginPath();
+        ctx.ellipse(
+          eye.x,
+          eye.y - CFG.eyeH * 0.45,
+          CFG.eyeW / 2,
+          Math.max(0.7, this.blink * CFG.eyeH * 0.75),
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    this.drawMouth(ctx);
   }
 
   drawMouth(ctx) {
@@ -199,12 +164,8 @@ class Avatar {
     const cornerY = y + smile * -1.4;
 
     ctx.save();
-
     ctx.beginPath();
-    ctx.moveTo(
-      x - mouthW / 2,
-      cornerY
-    );
+    ctx.moveTo(x - mouthW / 2, cornerY);
 
     ctx.quadraticCurveTo(
       x,
@@ -221,20 +182,13 @@ class Avatar {
     );
 
     ctx.closePath();
-
-    // Boca oscura al hablar y labios al cerrarse.
-    ctx.fillStyle = open > 0.10
-      ? "#642d38"
-      : CFG.lip;
-
+    ctx.fillStyle = open > 0.10 ? "#642d38" : CFG.lip;
     ctx.fill();
 
-    // Borde fino, sin dientes blancos artificiales.
     ctx.strokeStyle = CFG.lip;
     ctx.lineWidth = 1.15;
     ctx.lineJoin = "round";
     ctx.stroke();
-
     ctx.restore();
   }
 }
