@@ -8,17 +8,20 @@ class Voice {
     this.stream = null;
     this.rec = null;
     this.chunks = [];
+    this.source = null;
   }
 
   async start() {
-    // Inicializar el audio
+    if (this.rec?.state === "recording") {
+      throw new Error("Ya hay una grabación activa.");
+    }
+
     this.ctx ||= new AudioContext();
 
     if (this.ctx.state === "suspended") {
       await this.ctx.resume();
     }
 
-    // Solicitar acceso al micrófono
     if (!this.stream) {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -29,14 +32,20 @@ class Voice {
       });
     }
 
-    // Preparar una nueva grabación
     this.chunks = [];
-    this.rec = new MediaRecorder(this.stream);
 
-    this.rec.ondataavailable = (event) => {
-      if (event.data && event.data.size > 0) {
-        this.chunks.push(event.data);
-      }
+    const mimeType = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus"
+    ].find(type => MediaRecorder.isTypeSupported(type));
+
+    this.rec = mimeType
+      ? new MediaRecorder(this.stream, { mimeType })
+      : new MediaRecorder(this.stream);
+
+    this.rec.ondataavailable = event => {
+      if (event.data?.size > 0) this.chunks.push(event.data);
     };
 
     this.rec.start();
@@ -53,9 +62,10 @@ class Voice {
 
       recorder.onstop = () => {
         const audio = new Blob(this.chunks, {
-          type: recorder.mimeType
+          type: recorder.mimeType || "audio/webm"
         });
 
+        this.chunks = [];
         resolve(audio);
       };
 
@@ -72,39 +82,38 @@ class Voice {
       throw new Error("No se recibió audio del servidor.");
     }
 
-    // Inicializar y habilitar el audio
     this.ctx ||= new AudioContext();
 
     if (this.ctx.state === "suspended") {
       await this.ctx.resume();
     }
 
-    // Configurar el analizador para animar el avatar
     if (!this.an) {
       this.an = this.ctx.createAnalyser();
       this.an.fftSize = 512;
       this.an.connect(this.ctx.destination);
-
-      this.buf = new Uint8Array(
-        this.an.frequencyBinCount
-      );
+      this.buf = new Uint8Array(this.an.frequencyBinCount);
     }
 
     this.playing = false;
 
     try {
-      // Convertir el audio Base64 en un WAV reproducible
       const binary = atob(b64);
       const bytes = Uint8Array.from(
         binary,
         character => character.charCodeAt(0)
       );
 
-      const audioBuffer = await this.ctx.decodeAudioData(
-        bytes.buffer
-      );
+      const audioBuffer = await this.ctx.decodeAudioData(bytes.buffer);
+
+      if (this.source) {
+        try {
+          this.source.stop();
+        } catch (_) {}
+      }
 
       const source = this.ctx.createBufferSource();
+      this.source = source;
       source.buffer = audioBuffer;
       source.connect(this.an);
 
@@ -113,6 +122,7 @@ class Voice {
       await new Promise((resolve, reject) => {
         source.onended = () => {
           this.playing = false;
+          if (this.source === source) this.source = null;
           resolve();
         };
 
@@ -120,27 +130,21 @@ class Voice {
           source.start(0);
         } catch (error) {
           this.playing = false;
+          this.source = null;
           reject(error);
         }
       });
+
     } catch (error) {
       this.playing = false;
-      console.error(
-        "Error al reproducir la voz de UniGuard:",
-        error
-      );
-
+      console.error("Error al reproducir la voz de UniGuard:", error);
       throw error;
     }
   }
 
   level() {
-    // Sin audio, el avatar permanece en reposo
     if (!this.an || !this.playing) {
-      return {
-        amp: 0,
-        centroid: 0.5
-      };
+      return { amp: 0, centroid: 0.5 };
     }
 
     this.an.getByteFrequencyData(this.buf);
@@ -161,10 +165,16 @@ class Voice {
     };
   }
 
-  // Liberar el micrófono cuando sea necesario
   release() {
-    if (this.rec && this.rec.state === "recording") {
+    if (this.rec?.state === "recording") {
       this.rec.stop();
+    }
+
+    if (this.source) {
+      try {
+        this.source.stop();
+      } catch (_) {}
+      this.source = null;
     }
 
     if (this.stream) {
@@ -176,5 +186,5 @@ class Voice {
   }
 }
 
-// Permite que totem_app.js pueda crear new Voice()
 window.Voice = Voice;
+
