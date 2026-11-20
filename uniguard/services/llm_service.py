@@ -1,9 +1,9 @@
-
 import json
-import time
-import httpx
-import asyncio
+import logging
 import re
+import time
+
+import httpx
 
 from .. import database as db
 from ..config import settings
@@ -12,23 +12,21 @@ from ..arguss_client import (
     ArgussConnectionError,
 )
 
+log = logging.getLogger("uniguard.llm")
+
+OLLAMA_URL = "https://ollama.com/api/chat"
 
 SYSTEM = (
     "Sos Sofía, la recepcionista virtual de UniGuard, en Argentina. "
     "Respondé siempre en español rioplatense natural, correcto y amable. "
-    "Usá frases cortas y claras, con buena gramática y acentuación. "
-    "No uses portugués ni mezcles idiomas. "
-    "No inventes nombres, unidades, datos ni respuestas. "
-    "Si falta información, preguntá de forma natural qué dato necesitás. "
-    "Para recibir una visita, averiguá quién viene y a qué unidad se dirige. "
-    "Usá correctamente los signos de interrogación y exclamación. "
-    "Respondé únicamente con el mensaje que debe recibir el usuario. "
+    "Usá frases cortas y claras. No mezcles idiomas. "
+    "No inventes nombres, unidades ni datos. "
+    "Si falta información, preguntá qué dato necesitás. "
+    "Para registrar una visita necesitás el nombre del visitante "
+    "y la unidad de destino. "
     "Nunca autorices la entrada por tu cuenta: el residente debe aprobarla. "
-    "Para buscar residentes o registrar visitas, utilizá las herramientas disponibles. "
-    "Antes de registrar una visita, asegurate de tener el nombre del visitante "
-    "y la unidad de destino. No inventes ninguno de esos datos."
+    "Respondé únicamente con el mensaje que debe recibir el usuario."
 )
-
 
 TOOLS = [
     {
@@ -39,40 +37,36 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "consulta": {"type": "string"}
+                    "consulta": {"type": "string"},
                 },
-                "required": ["consulta"]
-            }
-        }
+                "required": ["consulta"],
+            },
+        },
     },
     {
         "type": "function",
         "function": {
             "name": "solicitar_visita",
             "description": (
-                "Envía una solicitud de visita al sistema central ARGUSS. "
-                "Usar solo cuando se conozcan el nombre del visitante "
-                "y la unidad de destino."
+                "Envía una solicitud de visita a ARGUSS. "
+                "Usar solamente cuando se conozcan el nombre "
+                "del visitante y la unidad de destino."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "unidad": {"type": "string"},
-                    "visitante": {"type": "string"}
+                    "visitante": {"type": "string"},
                 },
-                "required": ["unidad", "visitante"]
-            }
-        }
-    }
+                "required": ["unidad", "visitante"],
+            },
+        },
+    },
 ]
 
 
 def obtener_departamento(unidad: str) -> int:
-    """
-    Convierte unidades como 1A, 2B o 3C
-    en departamentos 1, 2 o 3.
-    """
-    coincidencia = re.match(r"^\s*([1-3])", unidad)
+    coincidencia = re.match(r"^\s*([1-3])", str(unidad))
 
     if not coincidencia:
         raise ValueError(
@@ -82,181 +76,229 @@ def obtener_departamento(unidad: str) -> int:
     return int(coincidencia.group(1))
 
 
-def chat(history: list, user_text: str):
+def _parse_arguments(arguments):
+    if isinstance(arguments, dict):
+        return arguments
+
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    return {}
+
+
+async def _execute_tool(call, events):
+    function_data = call.get("function", {})
+    function_name = function_data.get("name")
+    arguments = _parse_arguments(
+        function_data.get("arguments", {})
+    )
+
+    if function_name == "buscar_residente":
+        consulta = str(arguments.get("consulta", "")).strip()
+
+        if not consulta:
+            return {"error": "Falta el nombre o la unidad del residente."}
+
+        return db.find_residents(consulta)
+
+    if function_name == "solicitar_visita":
+        unit = str(arguments.get("unidad", "")).strip()
+        visitor = str(arguments.get("visitante", "")).strip()
+
+        if not unit or not visitor:
+            return {
+                "error": "Faltan el nombre del visitante o la unidad."
+            }
+
+        department = obtener_departamento(unit)
+
+        try:
+            response = await send_visit_to_arguss(
+                department=department,
+                visitor_name=visitor,
+                visitor_reason="",
+            )
+
+            if not isinstance(response, dict):
+                raise ArgussConnectionError(
+                    "ARGUSS devolvió una respuesta inválida."
+                )
+
+            visit_id = response.get("visit_id") or response.get("id")
+
+            if visit_id is None:
+                raise ArgussConnectionError(
+                    "ARGUSS no devolvió el identificador de la visita."
+                )
+
+            visit_id = str(visit_id)
+
+            db.log(
+                "VISIT_SENT_TO_ARGUSS",
+                {
+                    "visit_id": visit_id,
+                    "department": department,
+                    "unit": unit,
+                    "visitor": visitor,
+                    "response": response,
+                },
+            )
+
+            events.append(
+                {
+                    "type": "visit",
+                    "visit_id": visit_id,
+                    "unit": unit,
+                    "visitor": visitor,
+                    "department": department,
+                }
+            )
+
+            return {
+                "visit_id": visit_id,
+                "estado": "PENDING",
+                "mensaje": (
+                    "La solicitud fue enviada a ARGUSS "
+                    "y espera la respuesta del residente."
+                ),
+            }
+
+        except (ArgussConnectionError, ValueError) as error:
+            db.log(
+                "VISIT_SEND_FAILED",
+                {
+                    "unit": unit,
+                    "visitor": visitor,
+                    "error": str(error),
+                },
+            )
+            return {
+                "error": str(error),
+                "mensaje": "No se pudo registrar la visita.",
+            }
+
+    return {"error": "Herramienta desconocida."}
+
+
+async def chat(history: list, user_text: str):
     """
     Procesa la conversación con Sofía.
-    Las solicitudes de visita se envían al ARGUSS central.
+    Devuelve (respuesta, eventos).
     """
 
-    history.append({
-        "role": "user",
-        "content": user_text
-    })
+    if not isinstance(history, list):
+        history = []
+
+    user_text = str(user_text or "").strip()
+
+    if not user_text:
+        return "No escuché ningún mensaje. ¿Podés repetirlo?", []
+
+    history.append(
+        {
+            "role": "user",
+            "content": user_text,
+        }
+    )
 
     events = []
 
-    for intento in range(3):
-        inicio_ia = time.perf_counter()
-
-        response = httpx.post(
-    "https://ollama.com/api/chat",
-    headers={
+    headers = {
         "Authorization": f"Bearer {settings.ollama_api_key}",
-        "Content-Type": "application/json"
-    },
-    timeout=120,
-            json={
-                "model": settings.llm_model,
-                "keep_alive": "10m",
-                "stream": False,
-                "tools": TOOLS,
-                "messages": [
-                    {"role": "system", "content": SYSTEM}
-                ] + history[-6:]
-            }
-        )
+        "Content-Type": "application/json",
+    }
 
-        response.raise_for_status()
-        datos = response.json()
+    async with httpx.AsyncClient(timeout=120) as client:
+        for attempt in range(3):
+            started = time.perf_counter()
 
-        duracion_total = time.perf_counter() - inicio_ia
-        duracion_generacion = (
-            datos.get("eval_duration", 0) / 1_000_000_000
-        )
-
-        print(
-            f"[OLLAMA] Intento: {intento + 1}"
-            f" | Consulta: {duracion_total:.2f}s"
-            f" | Tokens de entrada: "
-            f"{datos.get('prompt_eval_count', 0)}"
-            f" | Tokens generados: {datos.get('eval_count', 0)}"
-            f" | Tiempo de generación: {duracion_generacion:.2f}s",
-            flush=True
-        )
-
-        result = datos.get("message", {})
-        history.append(result)
-
-        calls = result.get("tool_calls")
-
-        if not calls:
-            answer = result.get("content") or ""
-            return answer.strip(), events
-
-        for call in calls:
-            function = call["function"]["name"]
-            arguments = call["function"]["arguments"]
-
-            if function == "buscar_residente":
-
-                output = db.find_residents(
-                    arguments.get("consulta", "")
+            try:
+                response = await client.post(
+                    OLLAMA_URL,
+                    headers=headers,
+                    json={
+                        "model": settings.llm_model,
+                        "keep_alive": "10m",
+                        "stream": False,
+                        "tools": TOOLS,
+                        "messages": [
+                            {
+                                "role": "system",
+                                "content": SYSTEM,
+                            }
+                        ] + history[-10:],
+                    },
                 )
 
-            elif function == "solicitar_visita":
+                response.raise_for_status()
+                data = response.json()
 
-                unit = str(
-                    arguments.get("unidad", "")
-                ).strip()
+            except (httpx.HTTPError, ValueError) as error:
+                log.exception("Error consultando Ollama")
 
-                visitor = str(
-                    arguments.get("visitante", "")
-                ).strip()
+                if attempt < 2:
+                    continue
 
-                if not unit or not visitor:
+                return (
+                    "En este momento tengo problemas para responder. "
+                    "¿Podés intentarlo nuevamente?",
+                    events,
+                )
+
+            elapsed = time.perf_counter() - started
+
+            log.info(
+                "Ollama intento %s | duración %.2fs",
+                attempt + 1,
+                elapsed,
+            )
+
+            result = data.get("message") or {}
+            if not isinstance(result, dict):
+                return "No pude interpretar la respuesta. ¿Probamos otra vez?", events
+
+            history.append(result)
+
+            calls = result.get("tool_calls") or []
+
+            if not calls:
+                answer = str(result.get("content") or "").strip()
+
+                if not answer:
+                    answer = "No pude generar una respuesta. ¿Podés repetirlo?"
+
+                return answer, events
+
+            for call in calls:
+                try:
+                    output = await _execute_tool(call, events)
+                except (ValueError, ArgussConnectionError) as error:
+                    output = {"error": str(error)}
+                except Exception:
+                    log.exception("Error ejecutando herramienta")
                     output = {
-                        "error": (
-                            "Faltan el nombre del visitante "
-                            "o la unidad de destino."
-                        )
+                        "error": "No se pudo completar la operación."
                     }
 
-                else:
-                    try:
-                        department = obtener_departamento(unit)
+                function_data = call.get("function", {})
+                tool_name = function_data.get("name", "herramienta")
 
-                        # Enviar la visita al servidor central ARGUSS.
-                        respuesta = asyncio.run(
-                            send_visit_to_arguss(
-                                department=department,
-                                visitor_name=visitor,
-                                visitor_reason=""
-                            )
-                        )
-
-                        visit_id = respuesta.get("visit_id")
-
-                        if visit_id is None:
-                            visit_id = respuesta.get("id")
-
-                        if visit_id is None:
-                            raise ArgussConnectionError(
-                                "ARGUSS no devolvió el identificador "
-                                "de la visita. Revisar la respuesta del servidor."
-                            )
-
-                        # Auditoría local de UniGuard.
-                        db.log(
-                            "VISIT_SENT_TO_ARGUSS",
-                            {
-                                "visit_id": str(visit_id),
-                                "departamento": department,
-                                "unidad": unit,
-                                "visitante": visitor,
-                                "respuesta_arguss": respuesta
-                            }
-                        )
-
-                        # Aviso al residente conectado.
-                        events.append({
-                            "type": "visit",
-                            "visit_id": str(visit_id),
-                            "unit": unit,
-                            "visitor": visitor,
-                            "department": department
-                        })
-
-                        output = {
-                            "visit_id": str(visit_id),
-                            "estado": "PENDING",
-                            "mensaje": (
-                                "La solicitud fue enviada al sistema ARGUSS "
-                                "y está esperando la respuesta del residente."
-                            )
-                        }
-
-                    except (ArgussConnectionError, ValueError) as error:
-                        db.log(
-                            "VISIT_SEND_FAILED",
-                            {
-                                "unidad": unit,
-                                "visitante": visitor,
-                                "error": str(error)
-                            }
-                        )
-
-                        output = {
-                            "error": str(error),
-                            "mensaje": (
-                                "No se pudo registrar la visita. "
-                                "No confirmes que fue enviada."
-                            )
-                        }
-
-            else:
-                output = {
-                    "error": "Herramienta desconocida"
-                }
-
-            history.append({
-                "role": "tool",
-                "content": json.dumps(
-                    output,
-                    ensure_ascii=False
+                history.append(
+                    {
+                        "role": "tool",
+                        "content": json.dumps(
+                            output,
+                            ensure_ascii=False,
+                            default=str,
+                        ),
+                    }
                 )
-            })
 
-    return (
-        "Disculpá, no pude completar la solicitud. ¿Probamos de nuevo?",
-        events
-    )
+        return (
+            "Disculpá, no pude completar la solicitud. ¿Probamos de nuevo?",
+            events,
+        )
