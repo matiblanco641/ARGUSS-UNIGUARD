@@ -1,4 +1,3 @@
-
 import httpx
 
 from .config import settings
@@ -8,19 +7,7 @@ class ArgussConnectionError(Exception):
     pass
 
 
-async def send_visit_to_arguss(
-    department: int,
-    visitor_name: str,
-    visitor_reason: str = "",
-):
-    """
-    Envía una solicitud de visita desde UniGuard
-    al servidor central ARGUSS.
-    """
-
-    if department not in (1, 2, 3):
-        raise ValueError("El departamento debe ser 1, 2 o 3.")
-
+def _get_headers():
     if not settings.arguss_api_url:
         raise ArgussConnectionError(
             "Falta configurar ARGUSS_API_URL."
@@ -31,13 +18,56 @@ async def send_visit_to_arguss(
             "Falta configurar ARGUSS_SERVICE_TOKEN."
         )
 
-    base_url = settings.arguss_api_url.rstrip("/")
-    url = f"{base_url}/api/totem/visits"
-
-    headers = {
+    return {
         "X-TOTEM-KEY": settings.arguss_service_token,
         "Content-Type": "application/json",
     }
+
+
+def _parse_response(response: httpx.Response):
+    try:
+        result = response.json()
+    except ValueError as error:
+        raise ArgussConnectionError(
+            "ARGUSS devolvió una respuesta que no es JSON válido."
+        ) from error
+
+    if not isinstance(result, dict):
+        raise ArgussConnectionError(
+            "ARGUSS devolvió un formato de respuesta inesperado."
+        )
+
+    return result
+
+
+async def send_visit_to_arguss(
+    department: int,
+    visitor_name: str,
+    visitor_reason: str = "",
+):
+    """
+    Envía una solicitud de visita al servidor central ARGUSS.
+    """
+
+    if department not in (1, 2, 3):
+        raise ValueError(
+            "El departamento debe ser 1, 2 o 3."
+        )
+
+    visitor_name = visitor_name.strip()
+    visitor_reason = visitor_reason.strip()
+
+    if not visitor_name:
+        raise ValueError(
+            "El nombre del visitante es obligatorio."
+        )
+
+    headers = _get_headers()
+
+    url = (
+        f"{settings.arguss_api_url}"
+        "/api/totem/visits"
+    )
 
     payload = {
         "department": department,
@@ -47,7 +77,7 @@ async def send_visit_to_arguss(
 
     try:
         async with httpx.AsyncClient(
-            timeout=settings.arguss_timeout
+            timeout=settings.arguss_timeout,
         ) as client:
             response = await client.post(
                 url,
@@ -56,7 +86,8 @@ async def send_visit_to_arguss(
             )
 
             response.raise_for_status()
-            return response.json()
+
+            return _parse_response(response)
 
     except httpx.HTTPStatusError as error:
         raise ArgussConnectionError(
@@ -73,30 +104,24 @@ async def send_visit_to_arguss(
 async def get_visit_status(visit_id: str):
     """
     Consulta el estado de una visita en ARGUSS.
-    Requiere que exista la ruta GET correspondiente
-    en el servidor ARGUSS.
+    Requiere que ARGUSS tenga implementada la ruta GET correspondiente.
     """
 
-    if not settings.arguss_api_url:
-        raise ArgussConnectionError(
-            "Falta configurar ARGUSS_API_URL."
+    if not visit_id or not str(visit_id).strip():
+        raise ValueError(
+            "El identificador de visita es obligatorio."
         )
 
-    if not settings.arguss_service_token:
-        raise ArgussConnectionError(
-            "Falta configurar ARGUSS_SERVICE_TOKEN."
-        )
+    headers = _get_headers()
 
-    base_url = settings.arguss_api_url.rstrip("/")
-    url = f"{base_url}/api/totem/visits/{visit_id}"
-
-    headers = {
-        "X-TOTEM-KEY": settings.arguss_service_token,
-    }
+    url = (
+        f"{settings.arguss_api_url}"
+        f"/api/totem/visits/{visit_id}"
+    )
 
     try:
         async with httpx.AsyncClient(
-            timeout=settings.arguss_timeout
+            timeout=settings.arguss_timeout,
         ) as client:
             response = await client.get(
                 url,
@@ -104,7 +129,8 @@ async def get_visit_status(visit_id: str):
             )
 
             response.raise_for_status()
-            return response.json()
+
+            return _parse_response(response)
 
     except httpx.HTTPStatusError as error:
         raise ArgussConnectionError(
@@ -114,5 +140,5 @@ async def get_visit_status(visit_id: str):
 
     except httpx.RequestError as error:
         raise ArgussConnectionError(
-            "No se pudo consultar ARGUSS."
+            "No se pudo consultar el estado de la visita en ARGUSS."
         ) from error
