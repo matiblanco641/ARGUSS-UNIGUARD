@@ -1,16 +1,18 @@
-
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 
-# Ubicación de los modelos locales.
-PROJECT_DIR = Path(__file__).resolve().parents[3]
+# Ruta del proyecto: raíz / frontend-totem / assets / models
+PROJECT_DIR = Path(__file__).resolve().parents[2]
 MODELS_DIR = PROJECT_DIR / "frontend-totem" / "assets" / "models"
 
 YUNET_PATH = MODELS_DIR / "face_detection_yunet_2026may.onnx"
 SFACE_PATH = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
+
+MAX_IMAGE_SIZE = 10 * 1024 * 1024
+MAX_IMAGE_DIMENSION = 4096
 
 
 class FaceServiceError(Exception):
@@ -49,8 +51,10 @@ class FaceService:
             )
 
         except cv2.error as error:
+            self.detector = None
+            self.recognizer = None
             raise FaceServiceError(
-                f"Error al cargar los modelos: {error}"
+                f"Error al cargar los modelos faciales: {error}"
             ) from error
 
     def _ensure_loaded(self):
@@ -61,11 +65,31 @@ class FaceService:
         if not image_bytes:
             raise FaceServiceError("La imagen está vacía.")
 
-        array = np.frombuffer(image_bytes, dtype=np.uint8)
-        image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+        if len(image_bytes) > MAX_IMAGE_SIZE:
+            raise FaceServiceError(
+                "La imagen supera el tamaño máximo permitido de 10 MB."
+            )
+
+        try:
+            array = np.frombuffer(image_bytes, dtype=np.uint8)
+            image = cv2.imdecode(array, cv2.IMREAD_COLOR)
+        except (ValueError, cv2.error) as error:
+            raise FaceServiceError(
+                "No se pudo procesar la imagen."
+            ) from error
 
         if image is None:
-            raise FaceServiceError("La imagen no es válida.")
+            raise FaceServiceError("El archivo de imagen no es válido.")
+
+        height, width = image.shape[:2]
+
+        if (
+            width > MAX_IMAGE_DIMENSION
+            or height > MAX_IMAGE_DIMENSION
+        ):
+            raise FaceServiceError(
+                "La resolución de la imagen es demasiado grande."
+            )
 
         return image
 
@@ -75,7 +99,12 @@ class FaceService:
         height, width = image.shape[:2]
         self.detector.setInputSize((width, height))
 
-        _, faces = self.detector.detect(image)
+        try:
+            _, faces = self.detector.detect(image)
+        except cv2.error as error:
+            raise FaceServiceError(
+                f"Error al detectar el rostro: {error}"
+            ) from error
 
         if faces is None or len(faces) == 0:
             raise FaceServiceError("No se detectó ningún rostro.")
@@ -87,7 +116,14 @@ class FaceService:
 
         try:
             aligned = self.recognizer.alignCrop(image, faces[0])
-            return self.recognizer.feature(aligned)
+            feature = self.recognizer.feature(aligned)
+
+            if feature is None or feature.size == 0:
+                raise FaceServiceError(
+                    "No se pudo obtener la característica facial."
+                )
+
+            return feature
 
         except cv2.error as error:
             raise FaceServiceError(
@@ -115,7 +151,11 @@ class FaceService:
         return {
             "ok": True,
             "similarity": float(score),
-            "message": "Comparación completada. No es una autorización de acceso."
+            "message": (
+                "Comparación completada. "
+                "El resultado no constituye por sí solo "
+                "una autorización de acceso."
+            )
         }
 
 
