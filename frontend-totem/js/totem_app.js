@@ -32,6 +32,7 @@ let activeCall = null;
 let callSocket = null;
 let peerConnection = null;
 let callAudioStream = null;
+let remoteAudio = null;
 
 let ws = null;
 let reconnectTimer = null;
@@ -43,8 +44,7 @@ function createSessionId() {
     return crypto.randomUUID();
   }
 
-  return "session-" + Date.now() + "-" +
-    Math.random().toString(36).substring(2);
+  return `session-${Date.now()}-${Math.random().toString(36).substring(2)}`;
 }
 
 function getSessionId() {
@@ -139,12 +139,7 @@ const btn = $("talk");
 
 if (btn) {
   btn.addEventListener("pointerdown", async event => {
-    if (busy || activeCall || !ws || ws.readyState !== WebSocket.OPEN) {
-      if (!ws || ws.readyState !== WebSocket.OPEN) {
-        say("s", "Conexión con UniGuard no disponible.");
-      }
-      return;
-    }
+    if (busy || activeCall || btn.disabled) return;
 
     cancelSessionReset();
 
@@ -163,17 +158,17 @@ if (btn) {
   });
 
   btn.addEventListener("pointerup", async () => {
+    btn.classList.remove("on");
+
     if (
       busy ||
       activeCall ||
       !voice.rec ||
       voice.rec.state !== "recording"
     ) {
-      btn.classList.remove("on");
       return;
     }
 
-    btn.classList.remove("on");
     busy = true;
     btn.disabled = true;
     setState("THINKING");
@@ -205,11 +200,11 @@ if (btn) {
 
       if (result.transcript) say("v", result.transcript);
 
-      if (result.reply) {
-        say("s", result.reply);
-      } else {
+      if (!result.reply) {
         throw new Error("El servidor no devolvió una respuesta.");
       }
+
+      say("s", result.reply);
 
       if (result.audio_b64) {
         await speak(result.audio_b64);
@@ -237,7 +232,7 @@ if (btn) {
       try {
         await voice.stop();
       } catch (error) {
-        console.error(error);
+        console.error("Error deteniendo grabación:", error);
       }
     }
 
@@ -245,14 +240,20 @@ if (btn) {
   });
 }
 
-/* CONEXIÓN GENERAL DEL TÓTEM */
+/* CONEXIÓN GENERAL */
 
 function connectTotem() {
   if (shuttingDown) return;
 
   clearTimeout(reconnectTimer);
 
-  ws = new WebSocket(`${WS}/ws/totem`);
+  try {
+    ws = new WebSocket(`${WS}/ws/totem`);
+  } catch (error) {
+    console.error("No se pudo crear WebSocket:", error);
+    scheduleReconnect();
+    return;
+  }
 
   ws.onopen = () => {
     reconnectDelay = 1000;
@@ -294,15 +295,17 @@ function connectTotem() {
   };
 
   ws.onclose = () => {
-    if (shuttingDown) return;
-
-    console.warn("Conexión general cerrada. Reintentando...");
-
-    reconnectTimer = setTimeout(() => {
-      connectTotem();
-      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
-    }, reconnectDelay);
+    if (!shuttingDown) scheduleReconnect();
   };
+}
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+
+  reconnectTimer = setTimeout(() => {
+    connectTotem();
+    reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+  }, reconnectDelay);
 }
 
 connectTotem();
@@ -363,6 +366,22 @@ async function acceptCall(message) {
       peerConnection.addTrack(track, callAudioStream);
     });
 
+    peerConnection.ontrack = event => {
+      if (!remoteAudio) {
+        remoteAudio = document.createElement("audio");
+        remoteAudio.autoplay = true;
+        remoteAudio.playsInline = true;
+        remoteAudio.id = "remote-call-audio";
+        document.body.appendChild(remoteAudio);
+      }
+
+      remoteAudio.srcObject = event.streams[0];
+
+      remoteAudio.play().catch(error => {
+        console.error("No se pudo reproducir el audio remoto:", error);
+      });
+    };
+
     peerConnection.onicecandidate = event => {
       if (event.candidate) {
         sendSignal({
@@ -386,6 +405,10 @@ async function acceptCall(message) {
     callSocket = new WebSocket(
       `${WS}/ws/call/${encodeURIComponent(message.call_id)}?ticket=${encodeURIComponent(message.ticket)}`
     );
+
+    callSocket.onopen = () => {
+      callStatus("Conectado. Esperando al residente…");
+    };
 
     callSocket.onmessage = async event => {
       try {
@@ -474,12 +497,14 @@ async function endCall(message = "") {
     }
   }
 
-  if (connection) {
-    connection.close();
-  }
+  connection?.close();
 
-  if (audio) {
-    audio.getTracks().forEach(track => track.stop());
+  audio?.getTracks().forEach(track => track.stop());
+
+  if (remoteAudio) {
+    remoteAudio.srcObject = null;
+    remoteAudio.remove();
+    remoteAudio = null;
   }
 
   if (btn) btn.disabled = false;
@@ -490,9 +515,6 @@ async function endCall(message = "") {
 }
 
 /* CIERRE */
-
-currentSession = null;
-lastInteractionAt = 0;
 
 window.addEventListener("beforeunload", () => {
   shuttingDown = true;
