@@ -1,3 +1,4 @@
+
 const API =
   location.hostname === "localhost" ||
   location.hostname === "127.0.0.1"
@@ -32,6 +33,11 @@ let callSocket = null;
 let peerConnection = null;
 let callAudioStream = null;
 
+let ws = null;
+let reconnectTimer = null;
+let reconnectDelay = 1000;
+let shuttingDown = false;
+
 function createSessionId() {
   if (window.crypto?.randomUUID) {
     return crypto.randomUUID();
@@ -63,9 +69,9 @@ function scheduleSessionReset() {
 
     currentSession = null;
     lastInteractionAt = 0;
-    $("log").replaceChildren();
-    setState("IDLE");
 
+    $("log")?.replaceChildren();
+    setState("IDLE");
   }, SESSION_TIMEOUT);
 }
 
@@ -76,32 +82,52 @@ function cancelSessionReset() {
 
 function setState(state) {
   avatar.setState(state);
-  $("stxt").textContent = LABEL[state];
 
-  $("dot").className = {
-    LISTENING: "listening",
-    THINKING: "thinking",
-    GRANTED: "granted",
-    DENIED: "denied"
-  }[state] || "";
+  const status = $("stxt");
+  const dot = $("dot");
+
+  if (status) status.textContent = LABEL[state] || LABEL.IDLE;
+
+  if (dot) {
+    dot.className = {
+      LISTENING: "listening",
+      THINKING: "thinking",
+      GRANTED: "granted",
+      DENIED: "denied"
+    }[state] || "";
+  }
 }
 
 function say(cls, text) {
+  const log = $("log");
+  if (!log || !text) return;
+
   const paragraph = document.createElement("p");
   paragraph.className = cls;
-  paragraph.textContent = text;
+  paragraph.textContent = String(text);
 
-  $("log").append(paragraph);
+  log.append(paragraph);
 
-  while ($("log").children.length > 4) {
-    $("log").firstChild.remove();
+  while (log.children.length > 4) {
+    log.firstChild.remove();
   }
 }
 
 async function speak(b64) {
+  if (!b64) {
+    setState("IDLE");
+    return;
+  }
+
   setState("SPEAKING");
-  await voice.play(b64);
-  setState("IDLE");
+
+  try {
+    await voice.play(b64);
+  } catch (error) {
+    console.error("Error reproduciendo audio:", error);
+  } finally {
+    setState("IDLE");
+  }
 }
 
 (function tick() {
@@ -111,110 +137,175 @@ async function speak(b64) {
 
 const btn = $("talk");
 
-btn.addEventListener("pointerdown", async event => {
-  if (busy || activeCall) return;
-
-  cancelSessionReset();
-
-  btn.setPointerCapture(event.pointerId);
-  btn.classList.add("on");
-
-  try {
-    await voice.start();
-    setState("LISTENING");
-  } catch (error) {
-    btn.classList.remove("on");
-    say("s", "No puedo acceder al micrófono.");
-    scheduleSessionReset();
-  }
-});
-
-btn.addEventListener("pointerup", async () => {
-  if (
-    busy ||
-    activeCall ||
-    !voice.rec ||
-    voice.rec.state !== "recording"
-  ) {
-    btn.classList.remove("on");
-    return;
-  }
-
-  btn.classList.remove("on");
-  busy = true;
-  btn.disabled = true;
-  setState("THINKING");
-
-  try {
-    const sessionId = getSessionId();
-    const fd = new FormData();
-
-    fd.append("audio", await voice.stop(), "voz.webm");
-
-    const response = await fetch(
-      `${API}/api/converse?session=${encodeURIComponent(sessionId)}`,
-      {
-        method: "POST",
-        body: fd
+if (btn) {
+  btn.addEventListener("pointerdown", async event => {
+    if (busy || activeCall || !ws || ws.readyState !== WebSocket.OPEN) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        say("s", "Conexión con UniGuard no disponible.");
       }
-    );
-
-    if (!response.ok) {
-      throw new Error("Error en el servidor UniGuard.");
+      return;
     }
 
-    const result = await response.json();
+    cancelSessionReset();
 
-    if (result.transcript) say("v", result.transcript);
-    say("s", result.reply);
+    btn.setPointerCapture(event.pointerId);
+    btn.classList.add("on");
 
-    await speak(result.audio_b64);
+    try {
+      await voice.start();
+      setState("LISTENING");
+    } catch (error) {
+      console.error("Error de micrófono:", error);
+      btn.classList.remove("on");
+      say("s", "No puedo acceder al micrófono.");
+      scheduleSessionReset();
+    }
+  });
 
-  } catch (error) {
-    console.error(error);
-    setState("DENIED");
-    say("s", "El servicio no responde. Pedí ayuda en recepción.");
+  btn.addEventListener("pointerup", async () => {
+    if (
+      busy ||
+      activeCall ||
+      !voice.rec ||
+      voice.rec.state !== "recording"
+    ) {
+      btn.classList.remove("on");
+      return;
+    }
 
-  } finally {
-    busy = false;
-    btn.disabled = Boolean(activeCall);
     btn.classList.remove("on");
-    scheduleSessionReset();
-  }
-});
+    busy = true;
+    btn.disabled = true;
+    setState("THINKING");
 
+    try {
+      const sessionId = getSessionId();
+      const audioBlob = await voice.stop();
+
+      if (!audioBlob || !audioBlob.size) {
+        throw new Error("No se grabó audio.");
+      }
+
+      const fd = new FormData();
+      fd.append("audio", audioBlob, "voz.webm");
+
+      const response = await fetch(
+        `${API}/api/converse?session=${encodeURIComponent(sessionId)}`,
+        {
+          method: "POST",
+          body: fd
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Error del servidor: ${response.status}`);
+      }
+
+      const result = await response.json();
+
+      if (result.transcript) say("v", result.transcript);
+
+      if (result.reply) {
+        say("s", result.reply);
+      } else {
+        throw new Error("El servidor no devolvió una respuesta.");
+      }
+
+      if (result.audio_b64) {
+        await speak(result.audio_b64);
+      } else {
+        setState("IDLE");
+      }
+
+    } catch (error) {
+      console.error("Error en conversación:", error);
+      setState("DENIED");
+      say("s", "El servicio no responde. Pedí ayuda en recepción.");
+
+    } finally {
+      busy = false;
+      btn.disabled = Boolean(activeCall);
+      btn.classList.remove("on");
+      scheduleSessionReset();
+    }
+  });
+
+  btn.addEventListener("pointercancel", async () => {
+    btn.classList.remove("on");
+
+    if (voice.rec?.state === "recording") {
+      try {
+        await voice.stop();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    scheduleSessionReset();
+  });
+}
 
 /* CONEXIÓN GENERAL DEL TÓTEM */
 
-const ws = new WebSocket(`${WS}/ws/totem`);
+function connectTotem() {
+  if (shuttingDown) return;
 
-ws.onmessage = async event => {
-  const message = JSON.parse(event.data);
+  clearTimeout(reconnectTimer);
 
-  if (message.type === "decision") {
-    await endCall("La visita fue resuelta.");
+  ws = new WebSocket(`${WS}/ws/totem`);
 
-    setState(message.approved ? "GRANTED" : "DENIED");
+  ws.onopen = () => {
+    reconnectDelay = 1000;
+    console.log("UniGuard conectado.");
+  };
 
-    say(
-      "s",
-      message.approved
-        ? "¡Bienvenido! Ya podés pasar."
-        : "El residente no autorizó el ingreso."
-    );
+  ws.onmessage = async event => {
+    let message;
 
-    setTimeout(() => setState("IDLE"), 6000);
-  }
+    try {
+      message = JSON.parse(event.data);
+    } catch (error) {
+      console.error("Mensaje WebSocket inválido:", error);
+      return;
+    }
 
-  if (message.type === "incoming_call") {
-    await acceptCall(message);
-  }
-};
+    if (message.type === "decision") {
+      await endCall("La visita fue resuelta.");
 
-ws.onerror = error => {
-  console.error("Error en la conexión con UniGuard:", error);
-};
+      setState(message.approved ? "GRANTED" : "DENIED");
 
+      say(
+        "s",
+        message.approved
+          ? "¡Bienvenido! Ya podés pasar."
+          : "El residente no autorizó el ingreso."
+      );
+
+      setTimeout(() => setState("IDLE"), 6000);
+    }
+
+    if (message.type === "incoming_call") {
+      await acceptCall(message);
+    }
+  };
+
+  ws.onerror = error => {
+    console.error("Error en conexión general:", error);
+  };
+
+  ws.onclose = () => {
+    if (shuttingDown) return;
+
+    console.warn("Conexión general cerrada. Reintentando...");
+
+    reconnectTimer = setTimeout(() => {
+      connectTotem();
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
+    }, reconnectDelay);
+  };
+}
+
+connectTotem();
 
 /* LLAMADA WEBRTC */
 
@@ -233,12 +324,13 @@ function sendSignal(data) {
 }
 
 async function acceptCall(message) {
-  if (activeCall) return;
+  if (activeCall || !message.call_id || !message.ticket) return;
 
   activeCall = message.call_id;
   cancelSessionReset();
 
-  btn.disabled = true;
+  if (btn) btn.disabled = true;
+
   callStatus("Conectando con el residente…");
 
   try {
@@ -248,7 +340,6 @@ async function acceptCall(message) {
       throw new Error("La cámara del tótem no está disponible.");
     }
 
-    // El micrófono del tótem se utiliza durante la llamada.
     callAudioStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
@@ -283,6 +374,7 @@ async function acceptCall(message) {
 
     peerConnection.onconnectionstatechange = () => {
       if (
+        peerConnection &&
         ["failed", "disconnected", "closed"].includes(
           peerConnection.connectionState
         )
@@ -292,45 +384,48 @@ async function acceptCall(message) {
     };
 
     callSocket = new WebSocket(
-      `${protocol}//${location.hostname || "localhost"}:8001/ws/call/` +
-      `${encodeURIComponent(message.call_id)}?ticket=` +
-      `${encodeURIComponent(message.ticket)}`
+      `${WS}/ws/call/${encodeURIComponent(message.call_id)}?ticket=${encodeURIComponent(message.ticket)}`
     );
 
     callSocket.onmessage = async event => {
-      const data = JSON.parse(event.data);
+      try {
+        const data = JSON.parse(event.data);
 
-      if (data.type === "peer_ready") {
-        const offer = await peerConnection.createOffer();
+        if (data.type === "peer_ready") {
+          const offer = await peerConnection.createOffer();
+          await peerConnection.setLocalDescription(offer);
 
-        await peerConnection.setLocalDescription(offer);
+          sendSignal({
+            kind: "description",
+            description: peerConnection.localDescription
+          });
 
-        sendSignal({
-          kind: "description",
-          description: peerConnection.localDescription
-        });
-
-        callStatus("Llamada conectada.");
-      }
-
-      if (data.type === "signal") {
-        const signal = data.data;
-
-        if (signal.kind === "description") {
-          await peerConnection.setRemoteDescription(
-            new RTCSessionDescription(signal.description)
-          );
+          callStatus("Esperando al residente…");
         }
 
-        if (signal.kind === "candidate") {
-          await peerConnection.addIceCandidate(
-            new RTCIceCandidate(signal.candidate)
-          );
-        }
-      }
+        if (data.type === "signal") {
+          const signal = data.data;
 
-      if (data.type === "call_ended") {
-        await endCall("La llamada finalizó.");
+          if (signal.kind === "description") {
+            await peerConnection.setRemoteDescription(
+              new RTCSessionDescription(signal.description)
+            );
+          }
+
+          if (signal.kind === "candidate") {
+            await peerConnection.addIceCandidate(
+              new RTCIceCandidate(signal.candidate)
+            );
+          }
+        }
+
+        if (data.type === "call_ended") {
+          await endCall("La llamada finalizó.");
+        }
+
+      } catch (error) {
+        console.error("Error procesando señal:", error);
+        await endCall("Error durante la llamada.");
       }
     };
 
@@ -353,7 +448,9 @@ async function acceptCall(message) {
 }
 
 async function endCall(message = "") {
-  if (!activeCall && !peerConnection && !callAudioStream) return;
+  if (!activeCall && !peerConnection && !callAudioStream && !callSocket) {
+    return;
+  }
 
   const socket = callSocket;
   const connection = peerConnection;
@@ -364,9 +461,17 @@ async function endCall(message = "") {
   peerConnection = null;
   callAudioStream = null;
 
-  if (socket?.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify({ type: "hangup" }));
-    socket.close();
+  if (socket) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "hangup" }));
+    }
+
+    if (
+      socket.readyState === WebSocket.OPEN ||
+      socket.readyState === WebSocket.CONNECTING
+    ) {
+      socket.close();
+    }
   }
 
   if (connection) {
@@ -377,17 +482,26 @@ async function endCall(message = "") {
     audio.getTracks().forEach(track => track.stop());
   }
 
-  btn.disabled = false;
+  if (btn) btn.disabled = false;
+
   callStatus(message);
   setState("IDLE");
   scheduleSessionReset();
 }
 
+/* CIERRE */
 
-// Si se recarga la página, no se conserva una sesión anterior.
 currentSession = null;
 lastInteractionAt = 0;
 
 window.addEventListener("beforeunload", () => {
+  shuttingDown = true;
+  clearTimeout(reconnectTimer);
+  clearTimeout(idleTimer);
+
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
+  }
+
   endCall();
 });
