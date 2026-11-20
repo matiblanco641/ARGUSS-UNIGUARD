@@ -186,11 +186,7 @@ btn.addEventListener("pointerup", async () => {
 
 /* CONEXIÓN GENERAL DEL TÓTEM */
 
-const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-
-const ws = new WebSocket(
-  `${protocol}//${location.hostname || "localhost"}:8001/ws/totem`
-);
+const ws = new WebSocket(`${WS}/ws/totem`);
 
 ws.onmessage = async event => {
   const message = JSON.parse(event.data);
