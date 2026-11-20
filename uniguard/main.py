@@ -1,4 +1,3 @@
-
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
@@ -6,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import database as db
+from .config import settings
 from .arguss_client import (
     send_visit_to_arguss,
     ArgussConnectionError,
@@ -20,7 +20,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="UniGuard API",
-    version="1.0.0",
+    version="1.0.1",
     lifespan=lifespan,
 )
 
@@ -53,25 +53,38 @@ async def health():
     return {
         "ok": True,
         "service": "UniGuard",
-        "mode": "SIMULATED",
-        "arguss_configured": True,
+        "mode": settings.access_controller_mode,
+        "arguss_configured": bool(
+            settings.arguss_api_url
+            and settings.arguss_service_token
+        ),
     }
 
 
 @app.post("/api/visits")
 async def create_visit(data: VisitRequest):
+    visitor_name = data.visitor_name.strip()
+    visitor_reason = data.visitor_reason.strip()
+
+    if not visitor_name:
+        raise HTTPException(
+            status_code=422,
+            detail="El nombre del visitante es obligatorio.",
+        )
+
     try:
         result = await send_visit_to_arguss(
             department=data.department,
-            visitor_name=data.visitor_name.strip(),
-            visitor_reason=data.visitor_reason.strip(),
+            visitor_name=visitor_name,
+            visitor_reason=visitor_reason,
         )
 
         db.log(
             "VISIT_SENT_TO_ARGUSS",
             {
                 "department": data.department,
-                "visitor_name": data.visitor_name,
+                "visitor_name": visitor_name,
+                "visitor_reason": visitor_reason,
                 "response": result,
             },
         )
@@ -85,4 +98,19 @@ async def create_visit(data: VisitRequest):
         raise HTTPException(
             status_code=502,
             detail=str(error),
+        ) from error
+
+    except Exception as error:
+        db.log(
+            "VISIT_SEND_UNEXPECTED_ERROR",
+            {
+                "department": data.department,
+                "visitor_name": visitor_name,
+                "error": str(error),
+            },
         )
+
+        raise HTTPException(
+            status_code=500,
+            detail="Ocurrió un error interno al registrar la visita.",
+        ) from error
