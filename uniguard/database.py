@@ -2,14 +2,32 @@ import sqlite3
 import hashlib
 import json
 import time
+import os
+
+from contextlib import contextmanager
 
 from .config import settings
 
 
+@contextmanager
 def conn():
-    c = sqlite3.connect(settings.db_path)
-    c.row_factory = sqlite3.Row
-    return c
+    db_path = settings.db_path
+
+    if db_path != ":memory:":
+        directory = os.path.dirname(os.path.abspath(db_path))
+        os.makedirs(directory, exist_ok=True)
+
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+
+    try:
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def _column_exists(connection, table, column):
@@ -47,7 +65,6 @@ def init():
         );
         """)
 
-        # Migración compatible con la base existente.
         if not _column_exists(c, "residents", "password_hash"):
             c.execute(
                 "ALTER TABLE residents ADD COLUMN password_hash TEXT"
@@ -63,7 +80,9 @@ def init():
                 "ALTER TABLE residents ADD COLUMN enabled INTEGER DEFAULT 1"
             )
 
-        if not c.execute("SELECT 1 FROM residents").fetchone():
+        if not c.execute(
+            "SELECT 1 FROM residents LIMIT 1"
+        ).fetchone():
             c.executemany(
                 "INSERT INTO residents(name, unit) VALUES(?, ?)",
                 [
@@ -75,23 +94,25 @@ def init():
 
 
 def log(event: str, data: dict):
-    """Registro encadenado mediante hashes."""
+    """Registra eventos mediante una cadena de hashes."""
     with conn() as c:
         row = c.execute(
             "SELECT hash FROM audit ORDER BY id DESC LIMIT 1"
         ).fetchone()
 
-        prev = row["hash"] if row else "GENESIS"
+        previous_hash = row["hash"] if row else "GENESIS"
 
-        ts = time.time()
+        timestamp = time.time()
+
         payload = json.dumps(
             data,
             ensure_ascii=False,
-            sort_keys=True
+            sort_keys=True,
+            default=str,
         )
 
-        h = hashlib.sha256(
-            f"{prev}|{ts}|{event}|{payload}".encode()
+        current_hash = hashlib.sha256(
+            f"{previous_hash}|{timestamp}|{event}|{payload}".encode("utf-8")
         ).hexdigest()
 
         c.execute(
@@ -99,7 +120,13 @@ def log(event: str, data: dict):
             INSERT INTO audit(ts, event, data, prev, hash)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (ts, event, payload, prev, h),
+            (
+                timestamp,
+                event,
+                payload,
+                previous_hash,
+                current_hash,
+            ),
         )
 
 
@@ -107,23 +134,22 @@ def find_residents(q: str):
     with conn() as c:
         like = f"%{q}%"
 
-        return [
-            dict(r)
-            for r in c.execute(
-                """
-                SELECT name, unit
-                FROM residents
-                WHERE name LIKE ? OR unit LIKE ?
-                """,
-                (like, like),
-            )
-        ]
+        rows = c.execute(
+            """
+            SELECT name, unit
+            FROM residents
+            WHERE name LIKE ? OR unit LIKE ?
+            """,
+            (like, like),
+        ).fetchall()
+
+        return [dict(row) for row in rows]
 
 
 def get_face_templates():
     """
-    Devuelve únicamente los registros habilitados
-    que tengan una plantilla facial y contraseña.
+    Devuelve residentes habilitados que tienen
+    plantilla facial y contraseña configuradas.
     """
     with conn() as c:
         rows = c.execute(
@@ -155,7 +181,7 @@ def get_resident_auth(resident_id: int):
 
 def create_visit(unit: str, visitor: str) -> int:
     with conn() as c:
-        cur = c.execute(
+        cursor = c.execute(
             """
             INSERT INTO visits(unit, visitor, status, ts)
             VALUES (?, ?, ?, ?)
@@ -163,37 +189,40 @@ def create_visit(unit: str, visitor: str) -> int:
             (unit, visitor, "PENDING", time.time()),
         )
 
-        return cur.lastrowid
+        return cursor.lastrowid
 
 
-def get_visit(vid: int):
+def get_visit(visit_id: int):
     with conn() as c:
-        r = c.execute(
+        row = c.execute(
             "SELECT * FROM visits WHERE id = ?",
-            (vid,),
+            (visit_id,),
         ).fetchone()
 
-        return dict(r) if r else None
+        return dict(row) if row else None
 
 
-def set_visit(vid: int, status: str):
+def set_visit(visit_id: int, status: str):
     with conn() as c:
         c.execute(
             "UPDATE visits SET status = ? WHERE id = ?",
-            (status, vid),
+            (status, visit_id),
         )
 
 
-def set_visit_if_pending(vid: int, status: str) -> bool:
+def set_visit_if_pending(visit_id: int, status: str) -> bool:
     """
-    Cambia el estado solo si la visita sigue en PENDING.
-    Es atómico: evita decisiones duplicadas (y aperturas repetidas
-    de la puerta). Devuelve True si se actualizó la visita.
+    Actualiza una visita únicamente si sigue pendiente.
+    Devuelve True cuando se realizó la actualización.
     """
     with conn() as c:
-        cur = c.execute(
-            "UPDATE visits SET status = ? WHERE id = ? AND status = ?",
-            (status, vid, "PENDING"),
+        cursor = c.execute(
+            """
+            UPDATE visits
+            SET status = ?
+            WHERE id = ? AND status = ?
+            """,
+            (status, visit_id, "PENDING"),
         )
 
-        return cur.rowcount == 1
+        return cursor.rowcount == 1
